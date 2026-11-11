@@ -201,7 +201,7 @@ mod generate {
         let euros = (cents / 100).to_string();
         let mut grouped = String::new();
         for (i, digit) in euros.chars().enumerate() {
-            if i > 0 && (euros.len() - i) % 3 == 0 {
+            if i > 0 && (euros.len() - i).is_multiple_of(3) {
                 grouped.push('.');
             }
             grouped.push(digit);

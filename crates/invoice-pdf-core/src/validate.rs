@@ -1,20 +1,454 @@
 //! The validation pass over a parsed Layout and Invoice Data.
+//!
+//! Errors are collected, never short-circuited, so one pass reports
+//! everything that is wrong. Layout errors come first, then Invoice Data
+//! errors in document order (header, Line Items, totals, GiroCode).
 
-use crate::error::ValidationError;
+use std::collections::BTreeMap;
+
+use crate::error::{INVOICE_DATA_PATH, LAYOUT_PATH, ValidationError, join};
 use crate::invoice_data::InvoiceData;
-use crate::layout::Layout;
+use crate::layout::{Field, Layout, PAGE_HEIGHT_MM, PAGE_WIDTH_MM, StaticText, Zone};
+
+/// Background reference schemes the Background loader can resolve (issue #5).
+const BACKGROUND_SCHEMES: [&str; 3] = ["gs://", "file://", "https://"];
 
 /// Checks the Layout on its own: sizes, positions and the vertical fit of the zones.
 pub fn validate_layout(layout: &Layout) -> Vec<ValidationError> {
-    let _ = layout;
-    Vec::new()
+    let mut errors = Errors::default();
+    errors.check_layout(layout);
+    errors.0
 }
 
 /// Checks the Layout and that the Invoice Data supplies exactly the keys the
-/// Layout references. Returns every error found; empty means valid.
+/// Layout references: a referenced key that is missing is an error (it is
+/// never drawn as empty), and so is a key that no Field or column references.
+/// Returns every error found; empty means valid.
 pub fn validate(layout: &Layout, invoice_data: &InvoiceData) -> Vec<ValidationError> {
-    let _ = invoice_data;
-    validate_layout(layout)
+    let mut errors = Errors::default();
+    errors.check_layout(layout);
+    errors.check_references(layout, invoice_data);
+    errors.0
+}
+
+/// The parts of a Field, Static Text or page number that are checked alike.
+struct TextBox {
+    x: f64,
+    y: f64,
+    width: f64,
+    size: f64,
+}
+
+impl From<&Field> for TextBox {
+    fn from(field: &Field) -> Self {
+        Self {
+            x: field.x,
+            y: field.y,
+            width: field.width,
+            size: field.size,
+        }
+    }
+}
+
+impl From<&StaticText> for TextBox {
+    fn from(text: &StaticText) -> Self {
+        Self {
+            x: text.x,
+            y: text.y,
+            width: text.width,
+            size: text.size,
+        }
+    }
+}
+
+#[derive(Default)]
+struct Errors(Vec<ValidationError>);
+
+impl Errors {
+    fn push(&mut self, path: impl Into<String>, message: impl Into<String>) {
+        self.0.push(ValidationError::new(path, message));
+    }
+
+    fn check_layout(&mut self, layout: &Layout) {
+        self.check_margins(layout);
+        self.check_background(layout);
+
+        self.check_zone(
+            &join(LAYOUT_PATH, "firstPageHeader"),
+            &layout.first_page_header,
+        );
+        self.check_zone(
+            &join(LAYOUT_PATH, "continuationHeader"),
+            &layout.continuation_header,
+        );
+        self.check_table(layout);
+        self.check_zone(&join(LAYOUT_PATH, "totalsBlock"), &layout.totals_block);
+        self.check_footer(layout);
+        self.check_vertical_fit(layout);
+        self.check_giro_code_placement(layout);
+    }
+
+    fn check_margins(&mut self, layout: &Layout) {
+        let path = join(LAYOUT_PATH, "margins");
+        let margins = &layout.margins;
+        for (side, value) in [
+            ("top", margins.top),
+            ("right", margins.right),
+            ("bottom", margins.bottom),
+            ("left", margins.left),
+        ] {
+            self.non_negative(&join(&path, side), value);
+        }
+        if margins.left + margins.right >= PAGE_WIDTH_MM {
+            self.push(
+                &path,
+                format!(
+                    "left and right margins ({} mm + {} mm) leave no room on the {PAGE_WIDTH_MM} mm wide page",
+                    margins.left, margins.right
+                ),
+            );
+        }
+        if margins.top + margins.bottom >= PAGE_HEIGHT_MM {
+            self.push(
+                &path,
+                format!(
+                    "top and bottom margins ({} mm + {} mm) leave no room on the {PAGE_HEIGHT_MM} mm high page",
+                    margins.top, margins.bottom
+                ),
+            );
+        }
+    }
+
+    fn check_background(&mut self, layout: &Layout) {
+        let Some(reference) = &layout.background else {
+            return;
+        };
+        let supported = BACKGROUND_SCHEMES
+            .iter()
+            .any(|scheme| reference.len() > scheme.len() && reference.starts_with(scheme));
+        if !supported {
+            self.push(
+                join(LAYOUT_PATH, "background"),
+                format!(
+                    "Background reference `{reference}` must start with one of {} and name an image",
+                    BACKGROUND_SCHEMES.join(", ")
+                ),
+            );
+        }
+    }
+
+    fn check_zone(&mut self, path: &str, zone: &Zone) {
+        self.check_zone_contents(path, zone.height, &zone.fields, &zone.static_texts);
+    }
+
+    fn check_zone_contents(
+        &mut self,
+        path: &str,
+        height: f64,
+        fields: &[Field],
+        static_texts: &[StaticText],
+    ) {
+        self.non_negative(&join(path, "height"), height);
+        for (index, field) in fields.iter().enumerate() {
+            let field_path = join(&join(path, "fields"), index);
+            self.not_blank(&join(&field_path, "source"), &field.source);
+            self.check_text_box(&field_path, &field.into(), height);
+        }
+        for (index, text) in static_texts.iter().enumerate() {
+            let text_path = join(&join(path, "staticTexts"), index);
+            self.not_blank(&join(&text_path, "text"), &text.text);
+            self.check_text_box(&text_path, &text.into(), height);
+        }
+    }
+
+    fn check_footer(&mut self, layout: &Layout) {
+        let path = join(LAYOUT_PATH, "footer");
+        let footer = &layout.footer;
+        self.check_zone_contents(&path, footer.height, &footer.fields, &footer.static_texts);
+        if let Some(page_number) = &footer.page_number {
+            let page_number_path = join(&path, "pageNumber");
+            if !page_number.text.contains("{page}") || !page_number.text.contains("{pages}") {
+                self.push(
+                    join(&page_number_path, "text"),
+                    "must contain `{page}` and `{pages}` for the form \"page X of Y\"",
+                );
+            }
+            let text_box = TextBox {
+                x: page_number.x,
+                y: page_number.y,
+                width: page_number.width,
+                size: page_number.size,
+            };
+            self.check_text_box(&page_number_path, &text_box, footer.height);
+        }
+    }
+
+    fn check_table(&mut self, layout: &Layout) {
+        let path = join(LAYOUT_PATH, "table");
+        let table = &layout.table;
+        self.check_zone(&join(&path, "header"), &table.header);
+        self.non_negative(&join(&path, "rowPadding"), table.row_padding);
+
+        let columns_path = join(&path, "columns");
+        if table.columns.is_empty() {
+            self.push(
+                &columns_path,
+                "the Line Item Table needs at least one column",
+            );
+        }
+        let left = layout.margins.left;
+        let right = PAGE_WIDTH_MM - layout.margins.right;
+        for (index, column) in table.columns.iter().enumerate() {
+            let column_path = join(&columns_path, index);
+            self.not_blank(&join(&column_path, "source"), &column.source);
+            self.positive(&join(&column_path, "width"), column.width, "mm");
+            self.positive(&join(&column_path, "size"), column.size, "pt");
+            if column.x < left || column.x + column.width.max(0.0) > right {
+                self.push(
+                    join(&column_path, "x"),
+                    format!(
+                        "column from {} mm to {} mm lies outside the margins ({left} mm to {right} mm)",
+                        column.x,
+                        column.x + column.width
+                    ),
+                );
+            }
+            let overlapped = table.columns[..index].iter().position(|earlier| {
+                column.width > 0.0
+                    && earlier.width > 0.0
+                    && column.x < earlier.x + earlier.width
+                    && earlier.x < column.x + column.width
+            });
+            if let Some(earlier) = overlapped {
+                self.push(
+                    join(&column_path, "x"),
+                    format!("overlaps column {earlier}"),
+                );
+            }
+        }
+    }
+
+    /// The table needs room on every page, and the Totals Block must fit on a
+    /// page of its own (Continuation Header, Totals Block, Footer).
+    fn check_vertical_fit(&mut self, layout: &Layout) {
+        let margins = layout.margins.top + layout.margins.bottom;
+        let table_header = layout.table.header.height;
+        let footer = layout.footer.height;
+
+        for (zone, height, name, page) in [
+            (
+                "firstPageHeader",
+                layout.first_page_header.height,
+                "First-Page Header",
+                "the first page",
+            ),
+            (
+                "continuationHeader",
+                layout.continuation_header.height,
+                "Continuation Header",
+                "continuation pages",
+            ),
+        ] {
+            let used = margins + height + table_header + footer;
+            if used >= PAGE_HEIGHT_MM {
+                self.push(
+                    join(&join(LAYOUT_PATH, zone), "height"),
+                    format!(
+                        "margins, {name}, Table Header and Footer take {used} mm of the {PAGE_HEIGHT_MM} mm page and leave no room for Line Items on {page}"
+                    ),
+                );
+            }
+        }
+
+        let used =
+            margins + layout.continuation_header.height + layout.totals_block.height + footer;
+        if used > PAGE_HEIGHT_MM {
+            self.push(
+                join(&join(LAYOUT_PATH, "totalsBlock"), "height"),
+                format!(
+                    "margins, Continuation Header, Totals Block and Footer take {used} mm, so the Totals Block does not fit on a {PAGE_HEIGHT_MM} mm page"
+                ),
+            );
+        }
+    }
+
+    fn check_giro_code_placement(&mut self, layout: &Layout) {
+        let Some(placement) = &layout.giro_code else {
+            return;
+        };
+        let path = join(LAYOUT_PATH, "giroCode");
+        self.positive(&join(&path, "size"), placement.size, "mm");
+        let size = placement.size.max(0.0);
+        if placement.x < 0.0 || placement.x + size > PAGE_WIDTH_MM {
+            self.push(
+                join(&path, "x"),
+                format!(
+                    "GiroCode from {} mm to {} mm lies outside the page (0 mm to {PAGE_WIDTH_MM} mm)",
+                    placement.x,
+                    placement.x + size
+                ),
+            );
+        }
+        if placement.y < 0.0 || placement.y + size > PAGE_HEIGHT_MM {
+            self.push(
+                join(&path, "y"),
+                format!(
+                    "GiroCode from {} mm to {} mm lies outside the page (0 mm to {PAGE_HEIGHT_MM} mm)",
+                    placement.y,
+                    placement.y + size
+                ),
+            );
+        }
+    }
+
+    /// `x` is measured from the left page edge, `y` from the top of the zone.
+    fn check_text_box(&mut self, path: &str, text_box: &TextBox, zone_height: f64) {
+        self.positive(&join(path, "width"), text_box.width, "mm");
+        self.positive(&join(path, "size"), text_box.size, "pt");
+        let end = text_box.x + text_box.width.max(0.0);
+        if text_box.x < 0.0 || end > PAGE_WIDTH_MM {
+            self.push(
+                join(path, "x"),
+                format!(
+                    "box from {} mm to {end} mm lies outside the page (0 mm to {PAGE_WIDTH_MM} mm)",
+                    text_box.x
+                ),
+            );
+        }
+        if text_box.y < 0.0 {
+            self.push(
+                join(path, "y"),
+                format!("must not be negative (got {} mm)", text_box.y),
+            );
+        } else if zone_height >= 0.0 && text_box.y > zone_height {
+            // A negative zone height is already reported on the zone itself.
+            self.push(
+                join(path, "y"),
+                format!(
+                    "lies below the zone (y = {} mm, zone height = {zone_height} mm)",
+                    text_box.y
+                ),
+            );
+        }
+    }
+
+    fn non_negative(&mut self, path: &str, value: f64) {
+        if value < 0.0 {
+            self.push(path, format!("must not be negative (got {value} mm)"));
+        }
+    }
+
+    fn positive(&mut self, path: &str, value: f64, unit: &str) {
+        if value <= 0.0 {
+            self.push(
+                path,
+                format!("must be greater than 0 {unit} (got {value} {unit})"),
+            );
+        }
+    }
+
+    fn not_blank(&mut self, path: &str, value: &str) {
+        if value.trim().is_empty() {
+            self.push(path, "must not be empty");
+        }
+    }
+
+    fn check_references(&mut self, layout: &Layout, invoice_data: &InvoiceData) {
+        // Fields reading from `header`: both headers, the Table Header and the Footer.
+        let mut header_sources = Sources::default();
+        for (zone, fields) in [
+            ("firstPageHeader", &layout.first_page_header.fields),
+            ("continuationHeader", &layout.continuation_header.fields),
+            ("table/header", &layout.table.header.fields),
+            ("footer", &layout.footer.fields),
+        ] {
+            header_sources.add_fields(&format!("{LAYOUT_PATH}/{zone}"), fields);
+        }
+        let mut totals_sources = Sources::default();
+        totals_sources.add_fields(
+            &join(LAYOUT_PATH, "totalsBlock"),
+            &layout.totals_block.fields,
+        );
+        let mut column_sources = Sources::default();
+        let columns_path = join(&join(LAYOUT_PATH, "table"), "columns");
+        for (index, column) in layout.table.columns.iter().enumerate() {
+            column_sources.add(&column.source, join(&join(&columns_path, index), "source"));
+        }
+
+        self.check_keys(
+            &join(INVOICE_DATA_PATH, "header"),
+            invoice_data.header.keys(),
+            &header_sources,
+            "Field",
+        );
+        let line_items_path = join(INVOICE_DATA_PATH, "lineItems");
+        for (index, line_item) in invoice_data.line_items.iter().enumerate() {
+            self.check_keys(
+                &join(&line_items_path, index),
+                line_item.keys(),
+                &column_sources,
+                "Line Item Table column",
+            );
+        }
+        self.check_keys(
+            &join(INVOICE_DATA_PATH, "totals"),
+            invoice_data.totals.keys(),
+            &totals_sources,
+            "Field of the Totals Block",
+        );
+
+        if invoice_data.giro_code.is_some() && layout.giro_code.is_none() {
+            self.push(
+                join(INVOICE_DATA_PATH, "giroCode"),
+                "the Layout has no GiroCode placement (`giroCode`), so the GiroCode cannot be drawn",
+            );
+        }
+    }
+
+    /// Reports referenced keys missing from `keys` and keys nobody references.
+    fn check_keys<'a>(
+        &mut self,
+        path: &str,
+        keys: impl Iterator<Item = &'a String> + Clone,
+        sources: &Sources,
+        referenced_by: &str,
+    ) {
+        for (source, source_path) in &sources.0 {
+            if !keys.clone().any(|key| key == source) {
+                self.push(
+                    join(path, source),
+                    format!(
+                        "missing value for the {referenced_by} at {source_path}; referenced keys must be present"
+                    ),
+                );
+            }
+        }
+        for key in keys.filter(|key| !sources.0.contains_key(key.as_str())) {
+            self.push(
+                join(path, key),
+                format!("not referenced by any {referenced_by} of the Layout"),
+            );
+        }
+    }
+}
+
+/// Keys referenced by the Layout, each with the path of its first reference.
+#[derive(Default)]
+struct Sources(BTreeMap<String, String>);
+
+impl Sources {
+    fn add(&mut self, source: &str, path: String) {
+        if !source.trim().is_empty() {
+            self.0.entry(source.to_owned()).or_insert(path);
+        }
+    }
+
+    fn add_fields(&mut self, zone_path: &str, fields: &[Field]) {
+        for (index, field) in fields.iter().enumerate() {
+            let path = join(&join(&join(zone_path, "fields"), index), "source");
+            self.add(&field.source, path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -423,9 +857,11 @@ mod tests {
 
     #[test]
     fn keys_are_escaped_in_paths() {
+        let mut data = invoice_data();
+        data["header"]["net/gross~ratio"] = json!("x");
         assert_eq!(
-            data_error_paths("/header/a~1b", json!("x")),
-            ["/invoiceData/header/a~1b"]
+            error_paths(&layout(), &data),
+            ["/invoiceData/header/net~1gross~0ratio"]
         );
     }
 
