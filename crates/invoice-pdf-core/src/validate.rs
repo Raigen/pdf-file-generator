@@ -6,8 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::{INVOICE_DATA_PATH, LAYOUT_PATH, ValidationError, join};
-use crate::invoice_data::InvoiceData;
+use serde_json::Value;
+
+use crate::error::{INVOICE_DATA_PATH, LAYOUT_PATH, ValidationError, join, type_error};
+use crate::invoice_data::{InvoiceData, Values};
 use crate::layout::{Field, Layout, PAGE_HEIGHT_MM, PAGE_WIDTH_MM, StaticText, Zone};
 
 /// Background reference schemes the Background loader can resolve (issue #5).
@@ -20,9 +22,10 @@ pub fn validate_layout(layout: &Layout) -> Vec<ValidationError> {
     errors.0
 }
 
-/// Checks the Layout and that the Invoice Data supplies exactly the keys the
-/// Layout references: a referenced key that is missing is an error (it is
-/// never drawn as empty), and so is a key that no Field or column references.
+/// Checks the Layout and resolves every key it references in the Invoice
+/// Data: a referenced key that is missing is an error (it is never drawn as
+/// empty), and so is a referenced value that is not a string. Keys the Layout
+/// does not reference are ignored, whatever their value.
 /// Returns every error found; empty means valid.
 pub fn validate(layout: &Layout, invoice_data: &InvoiceData) -> Vec<ValidationError> {
     let mut errors = Errors::default();
@@ -377,7 +380,7 @@ impl Errors {
 
         self.check_keys(
             &join(INVOICE_DATA_PATH, "header"),
-            invoice_data.header.keys(),
+            &invoice_data.header,
             &header_sources,
             "Field",
         );
@@ -385,14 +388,14 @@ impl Errors {
         for (index, line_item) in invoice_data.line_items.iter().enumerate() {
             self.check_keys(
                 &join(&line_items_path, index),
-                line_item.keys(),
+                line_item,
                 &column_sources,
                 "Line Item Table column",
             );
         }
         self.check_keys(
             &join(INVOICE_DATA_PATH, "totals"),
-            invoice_data.totals.keys(),
+            &invoice_data.totals,
             &totals_sources,
             "Field of the Totals Block",
         );
@@ -405,29 +408,21 @@ impl Errors {
         }
     }
 
-    /// Reports referenced keys missing from `keys` and keys nobody references.
-    fn check_keys<'a>(
-        &mut self,
-        path: &str,
-        keys: impl Iterator<Item = &'a String> + Clone,
-        sources: &Sources,
-        referenced_by: &str,
-    ) {
+    /// Resolves every referenced key in `values`: one error per key that is
+    /// missing or whose value is not a string. Unreferenced keys are ignored.
+    fn check_keys(&mut self, path: &str, values: &Values, sources: &Sources, referenced_by: &str) {
         for (source, source_path) in &sources.0 {
-            if !keys.clone().any(|key| key == source) {
-                self.push(
-                    join(path, source),
+            let key_path = join(path, source);
+            match values.get(source) {
+                Some(Value::String(_)) => {}
+                Some(other) => self.0.push(type_error(&key_path, "a string", other)),
+                None => self.push(
+                    key_path,
                     format!(
                         "missing value for the {referenced_by} at {source_path}; referenced keys must be present"
                     ),
-                );
+                ),
             }
-        }
-        for key in keys.filter(|key| !sources.0.contains_key(key.as_str())) {
-            self.push(
-                join(path, key),
-                format!("not referenced by any {referenced_by} of the Layout"),
-            );
         }
     }
 }
@@ -462,13 +457,6 @@ mod tests {
         let mut value = layout();
         set(&mut value, pointer, new);
         error_paths(&value, &invoice_data())
-    }
-
-    /// Paths of all errors after changing one value of the test Invoice Data.
-    fn data_error_paths(pointer: &str, new: Value) -> Vec<String> {
-        let mut value = invoice_data();
-        set(&mut value, pointer, new);
-        error_paths(&layout(), &value)
     }
 
     fn message_at(layout: &Value, invoice_data: &Value, path: &str) -> String {
@@ -773,14 +761,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_header_key_is_an_error() {
-        assert_eq!(
-            data_error_paths("/header/orderNumber", json!("B-17")),
-            ["/invoiceData/header/orderNumber"]
-        );
-    }
-
-    #[test]
     fn missing_line_item_value_is_reported_with_its_index() {
         let mut data = invoice_data();
         let line_item = json!({ "description": "Beratung", "amount": "1,00 €" });
@@ -798,22 +778,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_line_item_key_is_an_error() {
-        assert_eq!(
-            data_error_paths("/lineItems/1/discount", json!("10 %")),
-            ["/invoiceData/lineItems/1/discount"]
-        );
-    }
-
-    #[test]
-    fn missing_and_unknown_totals_keys_are_errors() {
+    fn missing_totals_key_is_an_error() {
         let mut data = invoice_data();
         remove(&mut data, "/totals/gross");
         set(&mut data, "/totals/brutto", json!("119,00 €"));
-        assert_eq!(
-            error_paths(&layout(), &data),
-            ["/invoiceData/totals/gross", "/invoiceData/totals/brutto"]
-        );
+        assert_eq!(error_paths(&layout(), &data), ["/invoiceData/totals/gross"]);
     }
 
     #[test]
@@ -857,11 +826,14 @@ mod tests {
 
     #[test]
     fn keys_are_escaped_in_paths() {
-        let mut data = invoice_data();
-        data["header"]["net/gross~ratio"] = json!("x");
+        let mut value = layout();
+        value["totalsBlock"]["fields"]
+            .as_array_mut()
+            .expect("fields")
+            .push(json!({ "source": "net/gross~ratio", "x": 20, "y": 2, "width": 45, "size": 10 }));
         assert_eq!(
-            error_paths(&layout(), &data),
-            ["/invoiceData/header/net~1gross~0ratio"]
+            error_paths(&value, &invoice_data()),
+            ["/invoiceData/totals/net~1gross~0ratio"]
         );
     }
 
@@ -932,39 +904,42 @@ mod tests {
         set(&mut value, "/table/columns/0/size", json!(0));
         let mut data = invoice_data();
         remove(&mut data, "/lineItems/0/description");
-        set(&mut data, "/lineItems/1/note", json!("x"));
+        set(&mut data, "/lineItems/1/amount", json!(100));
         assert_eq!(
             error_paths(&value, &data),
             [
                 "/layout/margins/top",
                 "/layout/table/columns/0/size",
                 "/invoiceData/lineItems/0/description",
-                "/invoiceData/lineItems/1/note",
+                "/invoiceData/lineItems/1/amount",
             ]
         );
     }
 
     #[test]
-    fn layout_is_still_validated_when_invoice_data_has_type_errors() {
+    fn layout_is_still_validated_when_invoice_data_has_structural_errors() {
         let mut value = layout();
         set(&mut value, "/margins/top", json!(-1));
         let mut data = invoice_data();
-        set(&mut data, "/header/invoiceNumber", json!(1));
+        set(&mut data, "/totals", json!([]));
         assert_eq!(
             error_paths(&value, &data),
-            ["/layout/margins/top", "/invoiceData/header/invoiceNumber"]
+            ["/layout/margins/top", "/invoiceData/totals"]
         );
     }
 
     #[test]
     fn invoice_data_is_still_parsed_when_the_layout_is_malformed() {
+        // Without a Layout the referenced keys are unknown, so only the
+        // structure of the Invoice Data can be checked.
         let mut value = layout();
         set(&mut value, "/margins/top", json!("10mm"));
         let mut data = invoice_data();
+        set(&mut data, "/lineItems/1", json!("Reisekosten"));
         set(&mut data, "/totals/gross", json!(119));
         assert_eq!(
             error_paths(&value, &data),
-            ["/layout/margins/top", "/invoiceData/totals/gross"]
+            ["/layout/margins/top", "/invoiceData/lineItems/1"]
         );
     }
 }

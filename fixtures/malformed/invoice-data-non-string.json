@@ -4,7 +4,11 @@
     "recipient": "Muster & Söhne KG\nz. Hd. Frau Groß\nHauptstraße 17\n54321 Beispielstadt",
     "invoiceNumber": "RE-2026-0001",
     "invoiceDate": 20261111,
-    "dueDate": "25.11.2026"
+    "dueDate": "25.11.2026",
+    "erpReference": {
+      "id": 4711,
+      "system": "SAP"
+    }
   },
   "lineItems": [
     {
@@ -13,7 +17,8 @@
       "quantity": "8",
       "unit": "Std",
       "unitPrice": "95,00 €",
-      "amount": "760,00 €"
+      "amount": "760,00 €",
+      "erpId": 4711
     },
     {
       "number": "2",
@@ -37,13 +42,14 @@
     "tax": "198,91 €",
     "gross": {
       "value": "1.245,81 €"
-    }
+    },
+    "taxRate": 0.19
   },
   "giroCode": {
     "beneficiaryName": "ACME GmbH",
     "iban": "DE89370400440532013000",
     "bic": "COBADEFFXXX",
-    "amount": 1245.81,
+    "amount": "1245.81",
     "remittanceText": "RE-2026-0001"
   }
 }

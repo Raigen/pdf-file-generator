@@ -67,8 +67,6 @@ fn every_validation_error_is_reported_with_its_path() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     for path in [
         "/invoiceData/header/dueDate",
-        "/invoiceData/header/orderNumber",
-        "/invoiceData/lineItems/0/discount",
         "/invoiceData/lineItems/2/description",
         "/invoiceData/totals/tax",
     ] {
@@ -77,7 +75,10 @@ fn every_validation_error_is_reported_with_its_path() {
             "{path} in {stderr}"
         );
     }
-    assert!(stderr.contains("5 errors"), "{stderr}");
+    assert!(stderr.contains("3 errors"), "{stderr}");
+    // Keys the Layout does not reference are ignored.
+    assert!(!stderr.contains("orderNumber"), "{stderr}");
+    assert!(!stderr.contains("discount"), "{stderr}");
     assert!(!stderr.contains("inputs are valid"), "{stderr}");
 }
 
@@ -86,7 +87,7 @@ fn layout_and_invoice_data_errors_are_reported_together() {
     let output = invoice_pdf(&[
         "render",
         &fixture("malformed/layout-wrong-type.json"),
-        &fixture("malformed/invoice-data-non-string.json"),
+        &fixture("malformed/invoice-data-syntax-error.json"),
         "-o",
         "unused.pdf",
     ]);
@@ -97,7 +98,7 @@ fn layout_and_invoice_data_errors_are_reported_together() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("error: /invoiceData/lineItems/1/quantity: "),
+        stderr.contains("error: /invoiceData: invalid JSON"),
         "{stderr}"
     );
 }

@@ -17,7 +17,7 @@ use serde_json::Value;
 
 pub use e_invoice::EInvoiceProfile;
 pub use error::{INVOICE_DATA_PATH, LAYOUT_PATH, ValidationError};
-pub use invoice_data::{GiroCode, InvoiceData, LineItem};
+pub use invoice_data::{GiroCode, InvoiceData, LineItem, Values, text};
 pub use layout::{
     Align, Column, Field, Font, Footer, GiroCodePlacement, Layout, LineItemTable, Margins,
     PAGE_HEIGHT_MM, PAGE_WIDTH_MM, PageNumber, PageSize, StaticText, Zone,
@@ -28,7 +28,8 @@ pub use validate::{validate, validate_layout};
 ///
 /// Returns every error found in both inputs. If one input cannot be parsed,
 /// the other is still parsed (and a parsed Layout still validated on its own),
-/// but the cross-checks between the two are skipped.
+/// but the cross-checks between the two are skipped. These include resolving
+/// the referenced keys (missing or non-string values), which needs the Layout.
 pub fn load(
     layout_json: &str,
     invoice_data_json: &str,

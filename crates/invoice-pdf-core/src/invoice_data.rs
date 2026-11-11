@@ -1,9 +1,21 @@
 //! The Invoice Data: the per-run content of one Invoice.
 //!
-//! Every value is a pre-formatted string; the generator never calculates.
+//! Every value the Layout draws is a pre-formatted string; the generator never
+//! calculates. The Invoice Data may also carry data meant for other services,
+//! so parsing only checks the required structure (`header` and `totals` are
+//! objects, `lineItems` is an array of objects, `giroCode` has its known
+//! fields as strings) and keeps the values of `header`, `totals` and the Line
+//! Items as raw JSON. Unknown top-level members and unknown `giroCode` keys are
+//! ignored.
+//!
+//! Which keys must be present, and must be strings, is decided by the Layout:
+//! [`crate::validate`] resolves every referenced key and reports a missing or
+//! non-string value at its exact path. Keys the Layout does not reference are
+//! ignored, whatever their value. After a successful [`crate::load`], every
+//! referenced value is a string (see [`text`]).
+//!
 //! Parsing walks the JSON by hand instead of using derived `Deserialize`, so
-//! that every non-string value (and every other shape error) is reported with
-//! its own JSON pointer rather than as the first serde failure.
+//! that every structural error is reported with its own JSON pointer.
 
 use std::collections::BTreeMap;
 
@@ -12,17 +24,21 @@ use serde_json::{Map, Value};
 
 use crate::error::{INVOICE_DATA_PATH, ValidationError, join, syntax_error, type_error};
 
+/// Values by key, as given by the Platform. Values the Layout references are
+/// checked to be strings by the validation pass; the others may be anything.
+pub type Values = BTreeMap<String, Value>;
+
 /// One Line Item: column source key → pre-formatted value.
-pub type LineItem = BTreeMap<String, String>;
+pub type LineItem = Values;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceData {
     /// Values for the Fields of the headers, Table Header and Footer; may be multi-line.
-    pub header: BTreeMap<String, String>,
+    pub header: Values,
     pub line_items: Vec<LineItem>,
     /// Values for the Fields of the Totals Block.
-    pub totals: BTreeMap<String, String>,
+    pub totals: Values,
     /// Structured fields of the GiroCode; absent means no GiroCode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub giro_code: Option<GiroCode>,
@@ -47,6 +63,12 @@ pub struct GiroCode {
     pub purpose: Option<String>,
 }
 
+/// The string value of `key`, or `None` if it is absent or not a string.
+/// For keys the Layout references, validated Invoice Data always has a string.
+pub fn text<'a>(values: &'a Values, key: &str) -> Option<&'a str> {
+    values.get(key).and_then(Value::as_str)
+}
+
 impl InvoiceData {
     /// Parses Invoice Data from JSON text. Errors carry paths below `/invoiceData`.
     pub fn from_json(json: &str) -> Result<Self, Vec<ValidationError>> {
@@ -55,7 +77,7 @@ impl InvoiceData {
         Self::from_value(&value)
     }
 
-    /// Parses Invoice Data from a JSON value, reporting every shape error.
+    /// Parses Invoice Data from a JSON value, reporting every structural error.
     pub fn from_value(value: &Value) -> Result<Self, Vec<ValidationError>> {
         let mut errors = Vec::new();
         let invoice_data = parse_invoice_data(value, &mut errors);
@@ -66,21 +88,16 @@ impl InvoiceData {
     }
 }
 
-const MEMBERS: [&str; 4] = ["header", "lineItems", "totals", "giroCode"];
-const GIRO_CODE_REQUIRED: [&str; 3] = ["beneficiaryName", "iban", "amount"];
-const GIRO_CODE_OPTIONAL: [&str; 4] = ["bic", "remittanceText", "creditorReference", "purpose"];
-
 fn parse_invoice_data(value: &Value, errors: &mut Vec<ValidationError>) -> Option<InvoiceData> {
     let path = INVOICE_DATA_PATH;
     let members = expect_object(value, path, errors)?;
-    report_unknown_members(members, &MEMBERS, path, errors);
 
     let header = required(members, "header", path, errors)
-        .and_then(|value| string_map(value, &join(path, "header"), errors));
+        .and_then(|value| values(value, &join(path, "header"), errors));
     let line_items = required(members, "lineItems", path, errors)
         .and_then(|value| line_items(value, &join(path, "lineItems"), errors));
     let totals = required(members, "totals", path, errors)
-        .and_then(|value| string_map(value, &join(path, "totals"), errors));
+        .and_then(|value| values(value, &join(path, "totals"), errors));
     let giro_code = match members.get("giroCode") {
         None => Some(None),
         Some(value) => giro_code(value, &join(path, "giroCode"), errors).map(Some),
@@ -99,27 +116,21 @@ fn line_items(
     path: &str,
     errors: &mut Vec<ValidationError>,
 ) -> Option<Vec<LineItem>> {
-    let Value::Array(values) = value else {
+    let Value::Array(items) = value else {
         errors.push(type_error(path, "an array", value));
         return None;
     };
-    // Parse every Line Item even after a failure, to report all errors.
-    let parsed: Vec<_> = values
+    // Check every Line Item even after a failure, to report all errors.
+    let parsed: Vec<_> = items
         .iter()
         .enumerate()
-        .map(|(index, value)| string_map(value, &join(path, index), errors))
+        .map(|(index, value)| values(value, &join(path, index), errors))
         .collect();
     parsed.into_iter().collect()
 }
 
 fn giro_code(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Option<GiroCode> {
     let members = expect_object(value, path, errors)?;
-    let known: Vec<_> = GIRO_CODE_REQUIRED
-        .iter()
-        .chain(&GIRO_CODE_OPTIONAL)
-        .copied()
-        .collect();
-    report_unknown_members(members, &known, path, errors);
 
     let mut member = |key: &str, is_required: bool| -> Option<Option<String>> {
         match members.get(key) {
@@ -150,24 +161,16 @@ fn giro_code(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Op
     })
 }
 
-/// An object whose values must all be strings.
-fn string_map(
-    value: &Value,
-    path: &str,
-    errors: &mut Vec<ValidationError>,
-) -> Option<BTreeMap<String, String>> {
+/// An object whose values are kept as given; their types are checked only for
+/// the keys the Layout references.
+fn values(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Option<Values> {
     let members = expect_object(value, path, errors)?;
-    let mut map = BTreeMap::new();
-    let mut complete = true;
-    for (key, value) in members {
-        match string(value, &join(path, key), errors) {
-            Some(text) => {
-                map.insert(key.clone(), text);
-            }
-            None => complete = false,
-        }
-    }
-    complete.then_some(map)
+    Some(
+        members
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
 }
 
 fn string(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Option<String> {
@@ -205,20 +208,6 @@ fn required<'a>(
         errors.push(missing(&join(path, key)));
     }
     value
-}
-
-fn report_unknown_members(
-    members: &Map<String, Value>,
-    known: &[&str],
-    path: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    for key in members.keys().filter(|key| !known.contains(&key.as_str())) {
-        errors.push(ValidationError::new(
-            join(path, key),
-            format!("unknown member; expected one of {}", known.join(", ")),
-        ));
-    }
 }
 
 fn missing(path: &str) -> ValidationError {
@@ -279,42 +268,47 @@ mod tests {
     }
 
     #[test]
-    fn reports_non_string_header_value_with_path() {
+    fn keeps_values_of_any_type_for_the_validation_pass() {
+        // Whether a value must be a string depends on the Layout: only
+        // referenced keys are checked, in `validate`.
         let mut value = invoice_data();
         set(&mut value, "/header/invoiceNumber", json!(2026001));
-        let errors = parse_errors(&value);
-        assert_eq!(paths(&errors), ["/invoiceData/header/invoiceNumber"]);
-        assert_eq!(errors[0].message, "expected a string, found a number");
+        set(&mut value, "/lineItems/0/erp", json!({ "id": 1 }));
+        set(&mut value, "/totals/taxRate", json!(null));
+        let parsed = InvoiceData::from_value(&value).expect("structure is valid");
+        assert_eq!(parsed.header["invoiceNumber"], json!(2026001));
+        assert_eq!(parsed.line_items[0]["erp"], json!({ "id": 1 }));
+        assert_eq!(parsed.totals["taxRate"], Value::Null);
+        assert_eq!(text(&parsed.header, "invoiceNumber"), None);
+        assert_eq!(
+            text(&parsed.header, "recipient"),
+            Some("Muster GmbH\nHauptstraße 1\n12345 Musterstadt")
+        );
     }
 
     #[test]
-    fn reports_every_non_string_value_with_its_path() {
+    fn reports_every_non_string_giro_code_field_with_its_path() {
         let mut value = invoice_data();
-        set(&mut value, "/header/invoiceNumber", json!(null));
-        set(&mut value, "/lineItems/0/amount", json!(100.0));
-        set(&mut value, "/lineItems/1/description", json!(["Reise"]));
-        set(&mut value, "/totals/gross", json!({ "value": "119,00 €" }));
         set(&mut value, "/giroCode/iban", json!(true));
+        set(&mut value, "/giroCode/bic", json!(null));
+        set(&mut value, "/giroCode/amount", json!(119.0));
         let errors = parse_errors(&value);
+        let reported: Vec<_> = errors
+            .iter()
+            .map(|error| (error.path.as_str(), error.message.as_str()))
+            .collect();
         assert_eq!(
-            paths(&errors),
+            reported,
             [
-                "/invoiceData/header/invoiceNumber",
-                "/invoiceData/lineItems/0/amount",
-                "/invoiceData/lineItems/1/description",
-                "/invoiceData/totals/gross",
-                "/invoiceData/giroCode/iban",
-            ]
-        );
-        let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
-        assert_eq!(
-            messages,
-            [
-                "expected a string, found null",
-                "expected a string, found a number",
-                "expected a string, found an array",
-                "expected a string, found an object",
-                "expected a string, found a boolean",
+                (
+                    "/invoiceData/giroCode/iban",
+                    "expected a string, found a boolean"
+                ),
+                ("/invoiceData/giroCode/bic", "expected a string, found null"),
+                (
+                    "/invoiceData/giroCode/amount",
+                    "expected a string, found a number"
+                ),
             ]
         );
     }
@@ -364,16 +358,11 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_top_level_member() {
+    fn ignores_unknown_top_level_members() {
         let mut value = invoice_data();
-        set(&mut value, "/meta", json!({}));
-        let errors = parse_errors(&value);
-        assert_eq!(paths(&errors), ["/invoiceData/meta"]);
-        assert!(
-            errors[0].message.starts_with("unknown member"),
-            "{}",
-            errors[0].message
-        );
+        set(&mut value, "/meta", json!({ "requestId": 17 }));
+        set(&mut value, "/dunning", json!([1, 2]));
+        assert!(InvoiceData::from_value(&value).is_ok());
     }
 
     #[test]
@@ -384,19 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_and_unknown_giro_code_fields() {
+    fn reports_missing_giro_code_fields_and_ignores_unknown_ones() {
         let mut value = invoice_data();
         remove(&mut value, "/giroCode/iban");
         remove(&mut value, "/giroCode/amount");
-        set(&mut value, "/giroCode/currency", json!("EUR"));
+        set(&mut value, "/giroCode/currency", json!(["EUR"]));
         let errors = parse_errors(&value);
         assert_eq!(
             paths(&errors),
-            [
-                "/invoiceData/giroCode/currency",
-                "/invoiceData/giroCode/iban",
-                "/invoiceData/giroCode/amount",
-            ]
+            ["/invoiceData/giroCode/iban", "/invoiceData/giroCode/amount"]
         );
     }
 

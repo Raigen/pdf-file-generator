@@ -122,7 +122,9 @@ fn layout_with_wrong_type_reports_its_path() {
 }
 
 #[test]
-fn invoice_data_with_non_string_values_reports_each_path() {
+fn invoice_data_with_non_string_values_reports_each_referenced_path() {
+    // header/erpReference, lineItems/0/erpId and totals/taxRate are not
+    // strings either, but no Field or column references them.
     let errors = load_fixtures("layout.json", "malformed/invoice-data-non-string.json")
         .expect_err("malformed invoice data");
     let reported: Vec<_> = errors
@@ -148,22 +150,17 @@ fn invoice_data_with_non_string_values_reports_each_path() {
                 "/invoiceData/totals/gross",
                 "expected a string, found an object"
             ),
-            (
-                "/invoiceData/giroCode/amount",
-                "expected a string, found a number"
-            ),
         ]
     );
 }
 
 #[test]
-fn invoice_data_with_missing_and_unknown_keys_reports_each_path() {
+fn invoice_data_with_missing_keys_reports_each_path_and_ignores_unreferenced_keys() {
+    // header/orderNumber and lineItems/0/discount are not referenced: ignored.
     assert_eq!(
         error_paths("layout.json", "malformed/invoice-data-missing-keys.json"),
         [
             "/invoiceData/header/dueDate",
-            "/invoiceData/header/orderNumber",
-            "/invoiceData/lineItems/0/discount",
             "/invoiceData/lineItems/2/description",
             "/invoiceData/totals/tax",
         ]
