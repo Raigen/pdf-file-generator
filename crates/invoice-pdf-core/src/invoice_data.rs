@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::error::ValidationError;
+use crate::error::{INVOICE_DATA_PATH, ValidationError, join, syntax_error, type_error};
 
 /// One Line Item: column source key → pre-formatted value.
 pub type LineItem = BTreeMap<String, String>;
@@ -50,15 +50,179 @@ pub struct GiroCode {
 impl InvoiceData {
     /// Parses Invoice Data from JSON text. Errors carry paths below `/invoiceData`.
     pub fn from_json(json: &str) -> Result<Self, Vec<ValidationError>> {
-        let _ = json;
-        Err(Vec::new())
+        let value: Value = serde_json::from_str(json)
+            .map_err(|error| vec![syntax_error(INVOICE_DATA_PATH, &error)])?;
+        Self::from_value(&value)
     }
 
     /// Parses Invoice Data from a JSON value, reporting every shape error.
     pub fn from_value(value: &Value) -> Result<Self, Vec<ValidationError>> {
-        let _ = value;
-        Err(Vec::new())
+        let mut errors = Vec::new();
+        let invoice_data = parse_invoice_data(value, &mut errors);
+        match invoice_data {
+            Some(invoice_data) if errors.is_empty() => Ok(invoice_data),
+            _ => Err(errors),
+        }
     }
+}
+
+const MEMBERS: [&str; 4] = ["header", "lineItems", "totals", "giroCode"];
+const GIRO_CODE_REQUIRED: [&str; 3] = ["beneficiaryName", "iban", "amount"];
+const GIRO_CODE_OPTIONAL: [&str; 4] = ["bic", "remittanceText", "creditorReference", "purpose"];
+
+fn parse_invoice_data(value: &Value, errors: &mut Vec<ValidationError>) -> Option<InvoiceData> {
+    let path = INVOICE_DATA_PATH;
+    let members = expect_object(value, path, errors)?;
+    report_unknown_members(members, &MEMBERS, path, errors);
+
+    let header = required(members, "header", path, errors)
+        .and_then(|value| string_map(value, &join(path, "header"), errors));
+    let line_items = required(members, "lineItems", path, errors)
+        .and_then(|value| line_items(value, &join(path, "lineItems"), errors));
+    let totals = required(members, "totals", path, errors)
+        .and_then(|value| string_map(value, &join(path, "totals"), errors));
+    let giro_code = match members.get("giroCode") {
+        None => Some(None),
+        Some(value) => giro_code(value, &join(path, "giroCode"), errors).map(Some),
+    };
+
+    Some(InvoiceData {
+        header: header?,
+        line_items: line_items?,
+        totals: totals?,
+        giro_code: giro_code?,
+    })
+}
+
+fn line_items(
+    value: &Value,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<Vec<LineItem>> {
+    let Value::Array(values) = value else {
+        errors.push(type_error(path, "an array", value));
+        return None;
+    };
+    // Parse every Line Item even after a failure, to report all errors.
+    let parsed: Vec<_> = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| string_map(value, &join(path, index), errors))
+        .collect();
+    parsed.into_iter().collect()
+}
+
+fn giro_code(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Option<GiroCode> {
+    let members = expect_object(value, path, errors)?;
+    let known: Vec<_> = GIRO_CODE_REQUIRED
+        .iter()
+        .chain(&GIRO_CODE_OPTIONAL)
+        .copied()
+        .collect();
+    report_unknown_members(members, &known, path, errors);
+
+    let mut member = |key: &str, is_required: bool| -> Option<Option<String>> {
+        match members.get(key) {
+            None if is_required => {
+                errors.push(missing(&join(path, key)));
+                None
+            }
+            None => Some(None),
+            Some(value) => string(value, &join(path, key), errors).map(Some),
+        }
+    };
+    let beneficiary_name = member("beneficiaryName", true);
+    let iban = member("iban", true);
+    let bic = member("bic", false);
+    let amount = member("amount", true);
+    let remittance_text = member("remittanceText", false);
+    let creditor_reference = member("creditorReference", false);
+    let purpose = member("purpose", false);
+
+    Some(GiroCode {
+        beneficiary_name: beneficiary_name??,
+        iban: iban??,
+        bic: bic?,
+        amount: amount??,
+        remittance_text: remittance_text?,
+        creditor_reference: creditor_reference?,
+        purpose: purpose?,
+    })
+}
+
+/// An object whose values must all be strings.
+fn string_map(
+    value: &Value,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<BTreeMap<String, String>> {
+    let members = expect_object(value, path, errors)?;
+    let mut map = BTreeMap::new();
+    let mut complete = true;
+    for (key, value) in members {
+        match string(value, &join(path, key), errors) {
+            Some(text) => {
+                map.insert(key.clone(), text);
+            }
+            None => complete = false,
+        }
+    }
+    complete.then_some(map)
+}
+
+fn string(value: &Value, path: &str, errors: &mut Vec<ValidationError>) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        other => {
+            errors.push(type_error(path, "a string", other));
+            None
+        }
+    }
+}
+
+fn expect_object<'a>(
+    value: &'a Value,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<&'a Map<String, Value>> {
+    match value {
+        Value::Object(members) => Some(members),
+        other => {
+            errors.push(type_error(path, "an object", other));
+            None
+        }
+    }
+}
+
+fn required<'a>(
+    members: &'a Map<String, Value>,
+    key: &str,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) -> Option<&'a Value> {
+    let value = members.get(key);
+    if value.is_none() {
+        errors.push(missing(&join(path, key)));
+    }
+    value
+}
+
+fn report_unknown_members(
+    members: &Map<String, Value>,
+    known: &[&str],
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for key in members.keys().filter(|key| !known.contains(&key.as_str())) {
+        errors.push(ValidationError::new(
+            join(path, key),
+            format!("unknown member; expected one of {}", known.join(", ")),
+        ));
+    }
+}
+
+fn missing(path: &str) -> ValidationError {
+    ValidationError::new(path, "missing required member")
 }
 
 #[cfg(test)]

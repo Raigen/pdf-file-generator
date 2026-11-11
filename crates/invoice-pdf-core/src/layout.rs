@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::ValidationError;
+use crate::error::{LAYOUT_PATH, ValidationError, from_serde_path, syntax_error, type_error};
 
 /// Width of an A4 portrait page in mm.
 pub const PAGE_WIDTH_MM: f64 = 210.0;
@@ -191,18 +191,24 @@ pub enum Align {
 impl Layout {
     /// Parses a Layout from JSON text. Errors carry paths below `/layout`.
     pub fn from_json(json: &str) -> Result<Self, Vec<ValidationError>> {
-        let _ = json;
-        Err(Vec::new())
+        let value: Value =
+            serde_json::from_str(json).map_err(|error| vec![syntax_error(LAYOUT_PATH, &error)])?;
+        Self::from_value(&value)
     }
 
     /// Parses a Layout from a JSON value. Errors carry paths below `/layout`.
     ///
     /// The structure is checked by serde, which stops at the first mismatch, so
     /// this returns at most one error; its path points at the offending value
-    /// (or, for unknown and missing keys, at the object containing them).
+    /// (or, for a missing key, at the object that lacks it).
     pub fn from_value(value: &Value) -> Result<Self, Vec<ValidationError>> {
-        let _ = value;
-        Err(Vec::new())
+        if !value.is_object() {
+            return Err(vec![type_error(LAYOUT_PATH, "an object", value)]);
+        }
+        serde_path_to_error::deserialize(value).map_err(|error| {
+            let path = from_serde_path(LAYOUT_PATH, error.path());
+            vec![ValidationError::new(path, error.into_inner().to_string())]
+        })
     }
 }
 
@@ -299,11 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_key_at_its_object() {
+    fn reports_unknown_key_with_its_path() {
         let mut value = layout();
         set(&mut value, "/footer/colour", json!("red"));
         let errors = parse_errors(&value);
-        assert_eq!(errors[0].path, "/layout/footer");
+        assert_eq!(errors[0].path, "/layout/footer/colour");
         assert!(
             errors[0].message.contains("unknown field `colour`"),
             "{}",
@@ -327,7 +333,9 @@ mod tests {
     #[test]
     fn reports_non_object_layout_at_root() {
         let errors = parse_errors(&json!([1, 2]));
+        assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].path, "/layout");
+        assert_eq!(errors[0].message, "expected an object, found an array");
     }
 
     #[test]

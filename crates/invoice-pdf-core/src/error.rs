@@ -3,6 +3,7 @@
 use std::fmt;
 
 use serde::Serialize;
+use serde_json::Value;
 
 /// JSON pointer to the Layout inside a render request (`{layout, invoiceData}`).
 pub const LAYOUT_PATH: &str = "/layout";
@@ -40,6 +41,37 @@ impl std::error::Error for ValidationError {}
 pub(crate) fn join(base: &str, token: impl fmt::Display) -> String {
     let token = token.to_string().replace('~', "~0").replace('/', "~1");
     format!("{base}/{token}")
+}
+
+/// Converts the path of a serde error into a JSON pointer below `base`.
+pub(crate) fn from_serde_path(base: &str, path: &serde_path_to_error::Path) -> String {
+    use serde_path_to_error::Segment;
+
+    path.iter()
+        .fold(base.to_owned(), |pointer, segment| match segment {
+            Segment::Seq { index } => join(&pointer, index),
+            Segment::Map { key } => join(&pointer, key),
+            Segment::Enum { variant } => join(&pointer, variant),
+            Segment::Unknown => pointer,
+        })
+}
+
+/// An error for JSON text that cannot be parsed at all, reported at `base`.
+pub(crate) fn syntax_error(base: &str, error: &serde_json::Error) -> ValidationError {
+    ValidationError::new(base, format!("invalid JSON: {error}"))
+}
+
+/// An error for a value of the wrong JSON type, e.g. "expected a string, found a number".
+pub(crate) fn type_error(path: &str, expected: &str, found: &Value) -> ValidationError {
+    let found = match found {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    };
+    ValidationError::new(path, format!("expected {expected}, found {found}"))
 }
 
 #[cfg(test)]
