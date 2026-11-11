@@ -1,0 +1,15 @@
+[package]
+name = "invoice-pdf-cli"
+description = "Command-line interface rendering an Invoice from a Layout and Invoice Data."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "invoice-pdf"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+invoice-pdf-core.workspace = true
