@@ -1,0 +1,293 @@
+{
+  "pageSize": "A4",
+  "margins": {
+    "top": -5,
+    "right": 15,
+    "bottom": 15,
+    "left": 20
+  },
+  "background": "file://backgrounds/acme.png",
+  "firstPageHeader": {
+    "height": 95,
+    "fields": [
+      {
+        "source": "sender",
+        "x": 20,
+        "y": 25,
+        "width": 85,
+        "size": 7
+      },
+      {
+        "source": "recipient",
+        "x": 20,
+        "y": 32,
+        "width": 85,
+        "size": 10
+      },
+      {
+        "source": "invoiceNumber",
+        "x": 155,
+        "y": 32,
+        "width": 40,
+        "size": -9,
+        "align": "right"
+      },
+      {
+        "source": "invoiceDate",
+        "x": 155,
+        "y": 37,
+        "width": 40,
+        "size": 9,
+        "align": "right"
+      },
+      {
+        "source": "dueDate",
+        "x": 155,
+        "y": 42,
+        "width": 40,
+        "size": 9,
+        "align": "right"
+      }
+    ],
+    "staticTexts": [
+      {
+        "text": "Rechnungsnummer",
+        "x": 120,
+        "y": 32,
+        "width": 35,
+        "size": 9
+      },
+      {
+        "text": "Rechnungsdatum",
+        "x": 120,
+        "y": 37,
+        "width": 35,
+        "size": 9
+      },
+      {
+        "text": "Fällig am",
+        "x": 120,
+        "y": 42,
+        "width": 35,
+        "size": 9
+      },
+      {
+        "text": "Rechnung",
+        "x": 20,
+        "y": 75,
+        "width": 100,
+        "size": 16,
+        "font": "bold"
+      }
+    ]
+  },
+  "continuationHeader": {
+    "height": 15,
+    "fields": [
+      {
+        "source": "invoiceNumber",
+        "x": 45,
+        "y": 3,
+        "width": 60,
+        "size": 9
+      },
+      {
+        "source": "invoiceDate",
+        "x": 180,
+        "y": 3,
+        "width": 40,
+        "size": 9,
+        "align": "right"
+      }
+    ],
+    "staticTexts": [
+      {
+        "text": "Rechnung",
+        "x": 20,
+        "y": 3,
+        "width": 25,
+        "size": 9,
+        "font": "bold"
+      }
+    ]
+  },
+  "table": {
+    "header": {
+      "height": 8,
+      "staticTexts": [
+        {
+          "text": "Nr.",
+          "x": 20,
+          "y": 1.5,
+          "width": 12,
+          "size": 9,
+          "font": "bold"
+        },
+        {
+          "text": "Beschreibung",
+          "x": 34,
+          "y": 1.5,
+          "width": 86,
+          "size": 9,
+          "font": "bold"
+        },
+        {
+          "text": "Menge",
+          "x": 122,
+          "y": 1.5,
+          "width": 16,
+          "size": 9,
+          "font": "bold",
+          "align": "right"
+        },
+        {
+          "text": "Einheit",
+          "x": 140,
+          "y": 1.5,
+          "width": 12,
+          "size": 9,
+          "font": "bold"
+        },
+        {
+          "text": "Einzelpreis",
+          "x": 154,
+          "y": 1.5,
+          "width": 20,
+          "size": 9,
+          "font": "bold",
+          "align": "right"
+        },
+        {
+          "text": "Betrag",
+          "x": 176,
+          "y": 1.5,
+          "width": 19,
+          "size": 9,
+          "font": "bold",
+          "align": "right"
+        }
+      ]
+    },
+    "columns": [
+      {
+        "source": "number",
+        "x": 20,
+        "width": 12,
+        "size": 9
+      },
+      {
+        "source": "description",
+        "x": 34,
+        "width": 86,
+        "size": 9
+      },
+      {
+        "source": "quantity",
+        "x": 110,
+        "width": 16,
+        "size": 9,
+        "align": "right"
+      },
+      {
+        "source": "unit",
+        "x": 140,
+        "width": 12,
+        "size": 9
+      },
+      {
+        "source": "unitPrice",
+        "x": 154,
+        "width": 20,
+        "size": 9,
+        "align": "right"
+      },
+      {
+        "source": "amount",
+        "x": 176,
+        "width": 19,
+        "size": 9,
+        "align": "right"
+      }
+    ],
+    "rowPadding": 1
+  },
+  "totalsBlock": {
+    "height": 25,
+    "fields": [
+      {
+        "source": "net",
+        "x": 155,
+        "y": 3,
+        "width": 40,
+        "size": 9,
+        "align": "right"
+      },
+      {
+        "source": "tax",
+        "x": 155,
+        "y": 9,
+        "width": 40,
+        "size": 9,
+        "align": "right"
+      },
+      {
+        "source": "gross",
+        "x": 155,
+        "y": 16,
+        "width": 40,
+        "size": 10,
+        "font": "bold",
+        "align": "right"
+      }
+    ],
+    "staticTexts": [
+      {
+        "text": "Nettobetrag",
+        "x": 115,
+        "y": 3,
+        "width": 40,
+        "size": 9
+      },
+      {
+        "text": "USt. 19 %",
+        "x": 115,
+        "y": 9,
+        "width": 40,
+        "size": 9
+      },
+      {
+        "text": "Gesamtbetrag",
+        "x": 115,
+        "y": 16,
+        "width": 40,
+        "size": 10,
+        "font": "bold"
+      }
+    ]
+  },
+  "footer": {
+    "height": 15,
+    "staticTexts": [
+      {
+        "text": "ACME GmbH · Musterstraße 1 · 12345 Musterstadt · USt-IdNr. DE123456789",
+        "x": 20,
+        "y": 4,
+        "width": 130,
+        "size": 7
+      }
+    ],
+    "pageNumber": {
+      "text": "Seite {page} von {pages}",
+      "x": 155,
+      "y": 20,
+      "width": 40,
+      "size": 7,
+      "align": "right"
+    }
+  },
+  "giroCode": {
+    "x": 20,
+    "y": 238,
+    "size": 27
+  }
+}

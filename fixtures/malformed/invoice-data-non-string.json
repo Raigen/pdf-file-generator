@@ -1,0 +1,49 @@
+{
+  "header": {
+    "sender": "ACME GmbH · Musterstraße 1 · 12345 Musterstadt",
+    "recipient": "Muster & Söhne KG\nz. Hd. Frau Groß\nHauptstraße 17\n54321 Beispielstadt",
+    "invoiceNumber": "RE-2026-0001",
+    "invoiceDate": 20261111,
+    "dueDate": "25.11.2026"
+  },
+  "lineItems": [
+    {
+      "number": "1",
+      "description": "Beratung Projektplanung",
+      "quantity": "8",
+      "unit": "Std",
+      "unitPrice": "95,00 €",
+      "amount": "760,00 €"
+    },
+    {
+      "number": "2",
+      "description": "Reisekosten Hamburg–München\nBahnticket 2. Klasse",
+      "quantity": 1,
+      "unit": "psch",
+      "unitPrice": "139,90 €",
+      "amount": "139,90 €"
+    },
+    {
+      "number": "3",
+      "description": null,
+      "quantity": "3",
+      "unit": "Stk",
+      "unitPrice": "49,00 €",
+      "amount": "147,00 €"
+    }
+  ],
+  "totals": {
+    "net": "1.046,90 €",
+    "tax": "198,91 €",
+    "gross": {
+      "value": "1.245,81 €"
+    }
+  },
+  "giroCode": {
+    "beneficiaryName": "ACME GmbH",
+    "iban": "DE89370400440532013000",
+    "bic": "COBADEFFXXX",
+    "amount": 1245.81,
+    "remittanceText": "RE-2026-0001"
+  }
+}
