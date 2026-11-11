@@ -865,6 +865,64 @@ mod tests {
         );
     }
 
+    // --- Unreferenced Invoice Data is ignored --------------------------------
+
+    #[test]
+    fn unreferenced_keys_are_ignored_whatever_their_value() {
+        let mut data = invoice_data();
+        data["header"]["orderNumber"] = json!("B-2026-17");
+        data["header"]["erp"] = json!({ "id": 4711, "tags": ["a"] });
+        data["totals"]["currency"] = json!("EUR");
+        data["totals"]["taxRate"] = json!(0.19);
+        data["lineItems"][0]["discount"] = json!(null);
+        data["lineItems"][1]["sku"] = json!("SKU-1");
+        data["lineItems"][1]["tags"] = json!(["travel", true]);
+        assert_eq!(error_paths(&layout(), &data), Vec::<String>::new());
+    }
+
+    #[test]
+    fn unknown_top_level_and_giro_code_keys_are_ignored() {
+        let mut data = invoice_data();
+        data["meta"] = json!({ "requestId": 17 });
+        data["dunning"] = json!([1, 2]);
+        data["giroCode"]["currency"] = json!("EUR");
+        data["giroCode"]["internal"] = json!({ "x": null });
+        assert_eq!(error_paths(&layout(), &data), Vec::<String>::new());
+    }
+
+    #[test]
+    fn referenced_non_string_value_is_reported_at_its_exact_path() {
+        let mut data = invoice_data();
+        let line_item = json!({ "description": "Beratung", "amount": "1,00 €", "erpId": 1 });
+        set(&mut data, "/lineItems", Value::Array(vec![line_item; 500]));
+        data["lineItems"][417]["description"] = json!(4711);
+        data["header"]["invoiceNumber"] = json!(null);
+        data["totals"]["gross"] = json!({ "value": "119,00 €" });
+        data["totals"]["note"] = json!(false);
+        let found = errors(&layout(), &data);
+        let reported: Vec<_> = found
+            .iter()
+            .map(|error| (error.path.as_str(), error.message.as_str()))
+            .collect();
+        assert_eq!(
+            reported,
+            [
+                (
+                    "/invoiceData/header/invoiceNumber",
+                    "expected a string, found null"
+                ),
+                (
+                    "/invoiceData/lineItems/417/description",
+                    "expected a string, found a number"
+                ),
+                (
+                    "/invoiceData/totals/gross",
+                    "expected a string, found an object"
+                ),
+            ]
+        );
+    }
+
     // --- Reporting ------------------------------------------------------------
 
     #[test]
