@@ -1,0 +1,24 @@
+[package]
+name = "invoice-pdf-background"
+description = "Resolves, fetches, decodes and caches the Background image referenced by a Layout."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+# Without features only `file://` Backgrounds can be fetched; `gs://` and
+# `https://` references are still resolved and checked, but fetching them
+# fails. The HTTP service enables both; the CLI needs neither.
+gcs = ["dep:ureq", "dep:serde", "dep:serde_json"]
+https = ["dep:ureq"]
+
+[dependencies]
+flate2 = "1"
+png = "0.18"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

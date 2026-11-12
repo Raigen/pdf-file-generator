@@ -7,4 +7,5 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+invoice-pdf-background = { path = "../invoice-pdf-background", features = ["gcs", "https"] }
 invoice-pdf-core.workspace = true

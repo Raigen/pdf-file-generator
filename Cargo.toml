@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/invoice-pdf-core", "crates/invoice-pdf-cli", "crates/invoice-pdf-service"]
+members = ["crates/invoice-pdf-core", "crates/invoice-pdf-cli", "crates/invoice-pdf-service", "crates/invoice-pdf-background"]
 
 [workspace.package]
 edition = "2024"
