@@ -15,7 +15,7 @@ mod wrap;
 
 use std::fmt;
 
-use ttf_parser::{Face, GlyphId};
+use ttf_parser::{Face, GlyphId, name_id};
 
 use crate::layout::Font;
 
@@ -42,13 +42,19 @@ pub struct Fonts {
 impl Fonts {
     /// The embedded default fonts: Liberation Sans Regular and Bold.
     pub fn embedded() -> Self {
-        todo!()
+        let face = |data| FontFace::from_static(data).expect("embedded font is valid");
+        Self {
+            regular: face(LIBERATION_SANS_REGULAR),
+            bold: face(LIBERATION_SANS_BOLD),
+        }
     }
 
     /// The face the Layout means by `font`.
     pub fn face(&self, font: Font) -> &FontFace {
-        let _ = font;
-        todo!()
+        match font {
+            Font::Regular => &self.regular,
+            Font::Bold => &self.bold,
+        }
     }
 }
 
@@ -85,8 +91,15 @@ impl std::error::Error for FontError {}
 impl FontFace {
     /// Reads a TrueType font program.
     pub fn from_static(data: &'static [u8]) -> Result<Self, FontError> {
-        let _ = data;
-        todo!()
+        let face = Face::parse(data, 0).map_err(|error| FontError {
+            message: error.to_string(),
+        })?;
+        if face.tables().glyf.is_none() {
+            return Err(FontError {
+                message: "only TrueType outlines (glyf) are supported".to_owned(),
+            });
+        }
+        Ok(Self { data, face })
     }
 
     /// The font program as embedded before subsetting.
@@ -96,7 +109,12 @@ impl FontFace {
 
     /// The PostScript name from the font's `name` table, e.g. `LiberationSans-Bold`.
     pub fn postscript_name(&self) -> String {
-        todo!()
+        self.face
+            .names()
+            .into_iter()
+            .filter(|name| name.name_id == name_id::POST_SCRIPT_NAME)
+            .find_map(|name| name.to_string())
+            .unwrap_or_default()
     }
 
     /// Font design units per em.
@@ -106,27 +124,34 @@ impl FontFace {
 
     /// The glyph drawn for `c`; characters the font lacks map to `.notdef` (0).
     pub fn glyph_id(&self, c: char) -> GlyphId {
-        let _ = c;
-        todo!()
+        self.face.glyph_index(c).unwrap_or(GlyphId(0))
+    }
+
+    /// Advance width of glyph `glyph` in font design units.
+    fn glyph_advance(&self, glyph: GlyphId) -> u16 {
+        self.face.glyph_hor_advance(glyph).unwrap_or(0)
+    }
+
+    /// Converts font design units at `size` pt to mm.
+    fn units_to_mm(&self, units: f64, size: f64) -> f64 {
+        units / f64::from(self.units_per_em()) * size * MM_PER_PT
     }
 
     /// Advance width of `c` in font design units.
     pub fn advance(&self, c: char) -> u16 {
-        let _ = c;
-        todo!()
+        self.glyph_advance(self.glyph_id(c))
     }
 
     /// Width of `text` set at `size` pt, in mm.
     pub fn text_width(&self, text: &str, size: f64) -> f64 {
-        let _ = (text, size);
-        todo!()
+        let units: u64 = text.chars().map(|c| u64::from(self.advance(c))).sum();
+        self.units_to_mm(units as f64, size)
     }
 
     /// Height of one line at `size` pt and line-height factor `line_height`
     /// (e.g. 1.2 = 120 % of the font size), in mm.
     pub fn line_height(&self, size: f64, line_height: f64) -> f64 {
-        let _ = (size, line_height);
-        todo!()
+        size * line_height * MM_PER_PT
     }
 }
 

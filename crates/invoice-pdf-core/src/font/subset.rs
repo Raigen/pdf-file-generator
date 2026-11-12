@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use subsetter::GlyphRemapper;
+use ttf_parser::GlyphId;
 
 use super::{FontError, FontFace};
 
@@ -74,8 +75,16 @@ impl<'a> UsedGlyphs<'a> {
     /// Records the glyphs of `text` (one line, as returned by wrapping) and
     /// returns its CIDs, to be drawn as two-byte codes (Identity-H).
     pub fn add_text(&mut self, text: &str) -> Vec<u16> {
-        let _ = text;
-        todo!()
+        text.chars()
+            .map(|c| {
+                let glyph = self.face.glyph_id(c).0;
+                let cid = self.remapper.remap(glyph);
+                if glyph != 0 {
+                    self.to_unicode.entry(cid).or_insert_with(|| c.to_string());
+                }
+                cid
+            })
+            .collect()
     }
 
     /// Number of glyphs in the subset, `.notdef` included.
@@ -90,20 +99,79 @@ impl<'a> UsedGlyphs<'a> {
 
     /// Builds the subset font program and its PDF data.
     pub fn subset(&self) -> Result<FontSubset, FontError> {
-        todo!()
+        let font_program =
+            subsetter::subset(self.face.data(), 0, &self.remapper).map_err(|error| FontError {
+                message: format!("cannot subset {}: {error}", self.face.postscript_name()),
+            })?;
+        let widths = self
+            .remapper
+            .remapped_gids()
+            .map(|glyph| {
+                self.face
+                    .to_glyph_space(f64::from(self.face.glyph_advance(GlyphId(glyph))))
+            })
+            .collect();
+        Ok(FontSubset {
+            base_font: format!("{}+{}", self.subset_tag(), self.face.postscript_name()),
+            font_program,
+            widths,
+            to_unicode: self.to_unicode.clone(),
+            metrics: self.face.metrics(),
+        })
+    }
+
+    /// Six uppercase letters derived from the glyph set (FNV-1a hash), as
+    /// PDF requires for the names of subset fonts.
+    fn subset_tag(&self) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for glyph in self.remapper.remapped_gids() {
+            for byte in glyph.to_be_bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        (0..6)
+            .map(|_| {
+                let letter = b'A' + (hash % 26) as u8;
+                hash /= 26;
+                char::from(letter)
+            })
+            .collect()
     }
 }
 
 impl FontFace {
     /// Face-wide metrics for the FontDescriptor.
     pub fn metrics(&self) -> FontMetrics {
-        todo!()
+        let face = &self.face;
+        let scale = |units: i16| self.to_glyph_space(f64::from(units));
+        let bbox = face.global_bounding_box();
+        FontMetrics {
+            ascent: scale(face.ascender()),
+            descent: scale(face.descender()),
+            cap_height: scale(face.capital_height().unwrap_or(face.ascender())),
+            bbox: [
+                scale(bbox.x_min),
+                scale(bbox.y_min),
+                scale(bbox.x_max),
+                scale(bbox.y_max),
+            ],
+            italic_angle: f64::from(face.italic_angle()),
+            is_fixed_pitch: face.is_monospaced(),
+            is_italic: face.is_italic(),
+            is_bold: face.is_bold(),
+        }
+    }
+
+    /// Converts font design units to PDF glyph space (1000 units per em).
+    fn to_glyph_space(&self, units: f64) -> f64 {
+        units * 1000.0 / f64::from(self.units_per_em())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use ttf_parser::{Face, GlyphId};
+    use ttf_parser::Face;
 
     use super::super::Fonts;
     use super::*;
@@ -115,7 +183,7 @@ mod tests {
         let mut used = UsedGlyphs::new(fonts.face(Font::Regular));
         assert!(used.is_empty());
         assert_eq!(used.add_text("abba"), [1, 2, 2, 1]);
-        assert_eq!(used.add_text("€ab"), [3, 4, 1, 2]);
+        assert_eq!(used.add_text("€ ab"), [3, 4, 1, 2]);
         assert_eq!(used.len(), 5);
         assert!(!used.is_empty());
     }
@@ -139,7 +207,8 @@ mod tests {
         let subset = used.subset().expect("subset");
 
         let parsed = Face::parse(&subset.font_program, 0).expect("subset parses");
-        assert_eq!(usize::from(parsed.number_of_glyphs()), used.len());
+        // Components of composite glyphs (ö = o + ¨) are appended after the CIDs.
+        assert!(usize::from(parsed.number_of_glyphs()) >= used.len());
         assert_eq!(subset.widths.len(), used.len());
         for (c, cid) in text.chars().zip(cids) {
             let advance = parsed.glyph_hor_advance(GlyphId(cid)).expect("advance");
