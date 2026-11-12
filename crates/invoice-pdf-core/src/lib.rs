@@ -7,6 +7,7 @@
 
 mod e_invoice;
 mod error;
+pub mod font;
 mod invoice_data;
 mod layout;
 #[cfg(test)]
