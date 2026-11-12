@@ -21,6 +21,10 @@ mod config;
 mod decode;
 mod error;
 mod fetch;
+#[cfg(feature = "gcs")]
+mod gcs;
+#[cfg(any(feature = "gcs", feature = "https"))]
+mod http;
 mod loader;
 mod source;
 
