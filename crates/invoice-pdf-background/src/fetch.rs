@@ -38,7 +38,17 @@ impl DefaultFetcher {
 
 impl Fetch for DefaultFetcher {
     fn fetch(&self, source: &Source) -> Result<Vec<u8>, FetchError> {
-        let _ = source;
-        unimplemented!("issue #5")
+        match source {
+            Source::File(path) => std::fs::read(path).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => FetchError::NotFound,
+                _ => FetchError::Failed(error.to_string()),
+            }),
+            Source::Gcs { .. } => Err(FetchError::Failed(
+                "gs:// Backgrounds need the `gcs` feature of invoice-pdf-background".into(),
+            )),
+            Source::Https { .. } => Err(FetchError::Failed(
+                "https:// Backgrounds need the `https` feature of invoice-pdf-background".into(),
+            )),
+        }
     }
 }

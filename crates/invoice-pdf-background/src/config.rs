@@ -62,7 +62,24 @@ impl BackgroundConfig {
     /// environment variable by name (so tests need not touch the process
     /// environment). Empty values count as unset.
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let _ = var;
-        unimplemented!("issue #5")
+        let var = |name: &str| var(name).filter(|value| !value.trim().is_empty());
+        let mut config = Self::default();
+        if let Some(base_dir) = var(BASE_DIR_VAR) {
+            config.base_dir = Some(PathBuf::from(base_dir));
+        }
+        if let Some(hosts) = var(HTTPS_HOSTS_VAR) {
+            config.https_allowed_hosts = hosts
+                .split(',')
+                .map(|host| host.trim().to_ascii_lowercase())
+                .filter(|host| !host.is_empty())
+                .collect();
+        }
+        if let Some(bytes) = var(CACHE_BYTES_VAR) {
+            config.cache_max_bytes = bytes.trim().parse().map_err(|_| ConfigError {
+                var: CACHE_BYTES_VAR,
+                message: format!("expected a number of bytes, found `{bytes}`"),
+            })?;
+        }
+        Ok(config)
     }
 }
