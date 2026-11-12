@@ -1,5 +1,6 @@
 //! Core library of the Invoice PDF generator: the Layout and Invoice Data
-//! models and the validation pass that runs before any rendering.
+//! models, the validation pass that runs before any rendering, the fonts and
+//! the pagination pass that plans the pages.
 //!
 //! Every error is a [`ValidationError`] with a JSON pointer into the render
 //! request `{layout, invoiceData}`, so the CLI and the HTTP service report the
@@ -10,6 +11,7 @@ mod error;
 pub mod font;
 mod invoice_data;
 mod layout;
+mod paginate;
 #[cfg(test)]
 mod test_support;
 mod validate;
@@ -22,6 +24,9 @@ pub use invoice_data::{GiroCode, InvoiceData, LineItem, Values, text};
 pub use layout::{
     Align, Column, Field, Font, Footer, GiroCodePlacement, Layout, LineItemTable, Margins,
     PAGE_HEIGHT_MM, PAGE_WIDTH_MM, PageNumber, PageSize, StaticText, Zone,
+};
+pub use paginate::{
+    LINE_HEIGHT, Page, PageHeader, PagePlan, PlacedLineItem, line_item_height, paginate,
 };
 pub use validate::{validate, validate_layout};
 
