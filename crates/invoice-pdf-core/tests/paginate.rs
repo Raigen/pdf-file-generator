@@ -96,17 +96,18 @@ fn pagination_is_deterministic() {
 
 /// Page counts of the fixtures with `fixtures/layout.json`. A change here
 /// means pagination (or the fonts' metrics) changed.
-const PAGES_300: usize = 0;
-const PAGES_10K: usize = 0;
+const PAGES_300: usize = 11;
+const PAGES_10K: usize = 334;
 
 #[test]
 #[ignore = "timing check; run in release mode"]
 fn paginates_10k_line_items_in_under_100_ms_in_release_mode() {
-    assert!(
-        !cfg!(debug_assertions),
-        "the timing check is meaningful in release mode only: \
-         cargo test --release -p invoice-pdf-core --test paginate -- --ignored"
-    );
+    if cfg!(debug_assertions) {
+        panic!(
+            "the timing check is meaningful in release mode only: \
+             cargo test --release -p invoice-pdf-core --test paginate -- --ignored"
+        );
+    }
     let (layout, invoice_data) = load_fixtures("invoice-data-10k.json");
     let fonts = Fonts::embedded();
     // Warm up once, then take the best of a few runs to be robust against a

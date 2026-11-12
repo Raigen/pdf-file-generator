@@ -25,10 +25,10 @@
 
 use std::ops::Range;
 
-use crate::error::ValidationError;
+use crate::error::{INVOICE_DATA_PATH, ValidationError, join};
 use crate::font::Fonts;
-use crate::invoice_data::InvoiceData;
-use crate::layout::Layout;
+use crate::invoice_data::{InvoiceData, text};
+use crate::layout::{Layout, PAGE_HEIGHT_MM};
 
 /// Line-height factor for all text: lines are `LINE_HEIGHT` × the font size
 /// apart. The Layout has no line height of its own yet, so pagination and the
@@ -86,9 +86,17 @@ impl PagePlan {
 impl Page {
     /// Indices of the Line Items on this page (empty if there are none).
     pub fn line_item_range(&self) -> Range<usize> {
-        todo!()
+        match (self.line_items.first(), self.line_items.last()) {
+            (Some(first), Some(last)) => first.index..last.index + 1,
+            _ => 0..0,
+        }
     }
 }
+
+/// Slack when checking that something fits above the Footer, in mm, so that
+/// heights adding up to exactly the available space still fit despite
+/// floating-point rounding. Far below anything visible (1 µm).
+const FIT_TOLERANCE_MM: f64 = 1e-6;
 
 /// Height of Line Item `index` in mm: its tallest wrapped cell plus the
 /// `rowPadding` above and below.
@@ -98,8 +106,20 @@ pub fn line_item_height(
     fonts: &Fonts,
     index: usize,
 ) -> f64 {
-    let _ = (layout, invoice_data, fonts, index);
-    todo!()
+    let line_item = &invoice_data.line_items[index];
+    let tallest_cell = layout
+        .table
+        .columns
+        .iter()
+        .map(|column| {
+            let value = text(line_item, &column.source).unwrap_or_default();
+            fonts
+                .face(column.font)
+                .wrap(value, column.size, column.width, LINE_HEIGHT)
+                .height
+        })
+        .fold(0.0, f64::max);
+    tallest_cell + 2.0 * layout.table.row_padding
 }
 
 /// Plans the pages of an Invoice. Pure: no I/O.
@@ -111,8 +131,107 @@ pub fn paginate(
     invoice_data: &InvoiceData,
     fonts: &Fonts,
 ) -> Result<PagePlan, Vec<ValidationError>> {
-    let _ = (layout, invoice_data, fonts);
-    todo!()
+    let geometry = Geometry::new(layout);
+    let heights: Vec<f64> = (0..invoice_data.line_items.len())
+        .map(|index| line_item_height(layout, invoice_data, fonts, index))
+        .collect();
+
+    let continuation_area =
+        geometry.table_bottom - geometry.line_items_top(PageHeader::Continuation);
+    let errors: Vec<ValidationError> = heights
+        .iter()
+        .enumerate()
+        .filter(|&(_, &height)| height > continuation_area + FIT_TOLERANCE_MM)
+        .map(|(index, &height)| {
+            ValidationError::new(
+                join(&join(INVOICE_DATA_PATH, "lineItems"), index),
+                format!(
+                    "Line Item is {height:.2} mm tall, but a continuation page has room for \
+                     only {continuation_area:.2} mm of Line Items; it cannot be placed on any page"
+                ),
+            )
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut pages = vec![geometry.table_page(PageHeader::FirstPage)];
+    let mut y = geometry.line_items_top(PageHeader::FirstPage);
+    for (index, &height) in heights.iter().enumerate() {
+        if !geometry.fits(y, height) {
+            pages.push(geometry.table_page(PageHeader::Continuation));
+            y = geometry.line_items_top(PageHeader::Continuation);
+        }
+        let page = pages.last_mut().expect("at least one page");
+        page.line_items.push(PlacedLineItem { index, y, height });
+        y += height;
+    }
+
+    if !geometry.fits(y, layout.totals_block.height) {
+        pages.push(Page {
+            header: PageHeader::Continuation,
+            table_header_y: None,
+            line_items: Vec::new(),
+            totals_block_y: None,
+        });
+        y = geometry.header_bottom(PageHeader::Continuation);
+    }
+    pages.last_mut().expect("at least one page").totals_block_y = Some(y);
+
+    Ok(PagePlan { pages })
+}
+
+/// The vertical positions every page is built from.
+struct Geometry {
+    top_margin: f64,
+    first_page_header: f64,
+    continuation_header: f64,
+    table_header: f64,
+    /// Top of the Footer: nothing else may extend below it.
+    table_bottom: f64,
+}
+
+impl Geometry {
+    fn new(layout: &Layout) -> Self {
+        Self {
+            top_margin: layout.margins.top,
+            first_page_header: layout.first_page_header.height,
+            continuation_header: layout.continuation_header.height,
+            table_header: layout.table.header.height,
+            table_bottom: PAGE_HEIGHT_MM - layout.margins.bottom - layout.footer.height,
+        }
+    }
+
+    /// Bottom of the page's header zone: the Table Header, or on a page
+    /// holding only the Totals Block, the Totals Block, starts here.
+    fn header_bottom(&self, header: PageHeader) -> f64 {
+        self.top_margin
+            + match header {
+                PageHeader::FirstPage => self.first_page_header,
+                PageHeader::Continuation => self.continuation_header,
+            }
+    }
+
+    /// Top of the first Line Item on a page, below the Table Header.
+    fn line_items_top(&self, header: PageHeader) -> f64 {
+        self.header_bottom(header) + self.table_header
+    }
+
+    /// An empty page with a Table Header.
+    fn table_page(&self, header: PageHeader) -> Page {
+        Page {
+            header,
+            table_header_y: Some(self.header_bottom(header)),
+            line_items: Vec::new(),
+            totals_block_y: None,
+        }
+    }
+
+    /// Whether something `height` mm tall starting at `y` ends above the Footer.
+    fn fits(&self, y: f64, height: f64) -> bool {
+        y + height <= self.table_bottom + FIT_TOLERANCE_MM
+    }
 }
 
 #[cfg(test)]
@@ -120,7 +239,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::layout::{Font, PAGE_HEIGHT_MM};
+    use crate::layout::Font;
     use crate::test_support::{invoice_data, layout, set};
 
     // The test Layout: margins top 10 / bottom 10, First-Page Header 80,

@@ -23,3 +23,5 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: pagination timing (release)
+        run: cargo test --release -p invoice-pdf-core --test paginate -- --ignored --nocapture
